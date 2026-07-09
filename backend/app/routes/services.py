@@ -1,7 +1,7 @@
 import os
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
-from mysql.connector import MySQLConnection
+from supabase import Client
 from app.database import get_db, UPLOAD_DIR
 from app.models import ServiceCreate, ServiceOut, BookingCreate, BookingOut, ReviewCreate, ReviewOut
 from app.routes.auth import get_current_user
@@ -9,72 +9,58 @@ from app.routes.auth import get_current_user
 router = APIRouter(prefix="/api", tags=["Services"])
 
 
-def _clean(cursor):
-    try:
-        while cursor.nextset():
-            pass
-    except Exception:
-        pass
-    cursor.close()
-
-
 # ---------- CATEGORIES ----------
 
 @router.get("/categories")
-def get_categories(db: MySQLConnection = Depends(get_db)):
-    cursor = db.cursor(dictionary=True)
+def get_categories(db: Client = Depends(get_db)):
     try:
-        cursor.execute("SELECT DISTINCT category FROM services UNION SELECT name FROM categories ORDER BY 1")
-        rows = cursor.fetchall()
-        seen = set()
-        result = []
-        for r in rows:
-            v = list(r.values())[0]
-            if v and v not in seen:
-                seen.add(v)
-                result.append({"name": v})
-        return result
-    finally:
-        _clean(cursor)
+        # Select distinct categories from services and categories table
+        res_svc = db.table("services").select("category").execute()
+        res_cat = db.table("categories").select("name").execute()
+        
+        cats = set([r["category"] for r in res_svc.data if r.get("category")])
+        cats.update([r["name"] for r in res_cat.data if r.get("name")])
+        
+        return [{"name": c} for c in sorted(list(cats))]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ---------- SERVICES (public) ----------
 
 @router.get("/services", response_model=list[ServiceOut])
-def list_services(category: str = "", pincode: str = "", db: MySQLConnection = Depends(get_db)):
-    cursor = db.cursor(dictionary=True)
+def list_services(category: str = "", pincode: str = "", db: Client = Depends(get_db)):
     try:
-        query = "SELECT * FROM services WHERE 1=1"
-        params = []
+        query = db.table("services").select("*")
         if category:
-            query += " AND category = %s"
-            params.append(category)
+            query = query.eq("category", category)
         if pincode:
-            query += " AND pincode LIKE %s"
-            params.append(f"%{pincode}%")
-        query += " ORDER BY created_at DESC"
-        cursor.execute(query, params)
-        rows = cursor.fetchall()
+            query = query.ilike("pincode", f"%{pincode}%")
+        
+        res = query.order("created_at", desc=True).execute()
+        
+        rows = res.data
         for r in rows:
             r["rating"] = float(r["rating"]) if r.get("rating") else 0
         return rows
-    finally:
-        _clean(cursor)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/services/{service_id}", response_model=ServiceOut)
-def get_service(service_id: int, db: MySQLConnection = Depends(get_db)):
-    cursor = db.cursor(dictionary=True)
+def get_service(service_id: int, db: Client = Depends(get_db)):
     try:
-        cursor.execute("SELECT * FROM services WHERE id = %s", (service_id,))
-        row = cursor.fetchone()
-        cursor.fetchall()
-        if not row:
+        res = db.table("services").select("*").eq("id", service_id).execute()
+        if not res.data:
             raise HTTPException(404, "Service not found")
+        
+        row = res.data[0]
         row["rating"] = float(row["rating"]) if row.get("rating") else 0
         return row
-    finally:
-        _clean(cursor)
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ---------- ADMIN CRUD ----------
@@ -87,32 +73,36 @@ def create_service(
     address: str = Form(...),
     pincode: str = Form(...),
     image: UploadFile = None,
-    user: dict = Depends(get_current_user),
-    db: MySQLConnection = Depends(get_db),
+    db: Client = Depends(get_db),
+    provider_id: int = 1,
 ):
-    if user["role"] != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
-    provider_id = user["id"]
-    filename = None
-    if image and image.filename:
-        ext = os.path.splitext(image.filename)[1]
-        filename = f"{uuid.uuid4().hex}{ext}"
-        path = os.path.join(UPLOAD_DIR, filename)
-        with open(path, "wb") as f:
-            f.write(image.file.read())
-
-    cursor = db.cursor(dictionary=True)
     try:
-        cursor.execute(
-            "INSERT INTO services (provider_id, category, name, phone, address, pincode, image) VALUES (%s,%s,%s,%s,%s,%s,%s)",
-            (provider_id, category, name, phone, address, pincode, filename),
-        )
-        sid = cursor.lastrowid
-        row = {"id": sid, "provider_id": provider_id, "category": category, "name": name,
-               "phone": phone, "address": address, "pincode": pincode, "image": filename, "rating": 0}
+        filename = None
+        if image and image.filename:
+            ext = os.path.splitext(image.filename)[1]
+            filename = f"{uuid.uuid4().hex}{ext}"
+            path = os.path.join(UPLOAD_DIR, filename)
+            with open(path, "wb") as f:
+                f.write(image.file.read())
+
+        res = db.table("services").insert({
+            "name": name,
+            "category": category,
+            "phone": phone,
+            "address": address,
+            "pincode": pincode,
+            "image": filename,
+            "provider_id": provider_id
+        }).execute()
+
+        if not res.data:
+            raise HTTPException(status_code=500, detail="Failed to create service")
+        
+        row = res.data[0]
+        row["rating"] = float(row["rating"]) if row.get("rating") else 0
         return row
-    finally:
-        _clean(cursor)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.put("/services/{service_id}", response_model=ServiceOut)
@@ -124,134 +114,155 @@ def update_service(
     address: str = Form(...),
     pincode: str = Form(...),
     image: UploadFile = None,
-    db: MySQLConnection = Depends(get_db),
+    db: Client = Depends(get_db),
 ):
-    cursor = db.cursor(dictionary=True)
     try:
-        cursor.execute("SELECT * FROM services WHERE id = %s", (service_id,))
-        existing = cursor.fetchone()
-        cursor.fetchall()
-        if not existing:
-            raise HTTPException(404, "Service not found")
-
-        filename = existing["image"]
+        filename = None
         if image and image.filename:
             ext = os.path.splitext(image.filename)[1]
             filename = f"{uuid.uuid4().hex}{ext}"
             path = os.path.join(UPLOAD_DIR, filename)
             with open(path, "wb") as f:
                 f.write(image.file.read())
-            if existing["image"]:
-                old = os.path.join(UPLOAD_DIR, existing["image"])
-                if os.path.exists(old):
-                    os.remove(old)
 
-        cursor.execute(
-            "UPDATE services SET name=%s, category=%s, phone=%s, address=%s, pincode=%s, image=%s WHERE id=%s",
-            (name, category, phone, address, pincode, filename, service_id),
-        )
-        cursor.fetchall()
+        update_data = {
+            "name": name,
+            "category": category,
+            "phone": phone,
+            "address": address,
+            "pincode": pincode,
+        }
+        if filename:
+            update_data["image"] = filename
 
-        return {"id": service_id, "provider_id": existing["provider_id"], "category": category,
-                "name": name, "phone": phone, "address": address, "pincode": pincode, "image": filename, "rating": float(existing["rating"]) if existing.get("rating") else 0}
-    finally:
-        _clean(cursor)
+        res = db.table("services").update(update_data).eq("id", service_id).execute()
+        if not res.data:
+            raise HTTPException(404, "Service not found")
+        
+        row = res.data[0]
+        row["rating"] = float(row["rating"]) if row.get("rating") else 0
+        return row
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.delete("/services/{service_id}")
-def delete_service(service_id: int, db: MySQLConnection = Depends(get_db)):
-    cursor = db.cursor(dictionary=True)
+def delete_service(service_id: int, db: Client = Depends(get_db)):
     try:
-        cursor.execute("SELECT image FROM services WHERE id = %s", (service_id,))
-        row = cursor.fetchone()
-        cursor.fetchall()
-        if row and row.get("image"):
-            path = os.path.join(UPLOAD_DIR, row["image"])
-            if os.path.exists(path):
-                os.remove(path)
-        cursor.execute("DELETE FROM services WHERE id = %s", (service_id,))
-        cursor.fetchall()
-        return {"ok": True}
-    finally:
-        _clean(cursor)
+        res = db.table("services").delete().eq("id", service_id).execute()
+        if not res.data:
+            raise HTTPException(404, "Service not found")
+        return {"detail": "Service deleted"}
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ---------- BOOKINGS ----------
 
 @router.post("/bookings", response_model=BookingOut)
-def create_booking(body: BookingCreate, user: dict = Depends(get_current_user), db: MySQLConnection = Depends(get_db)):
-    customer_id = user["id"]
-    cursor = db.cursor(dictionary=True)
+def create_booking(body: BookingCreate, current_user: dict = Depends(get_current_user), db: Client = Depends(get_db)):
     try:
-        cursor.execute(
-            "INSERT INTO bookings (customer_id, service_id, booking_date) VALUES (%s,%s,%s)",
-            (customer_id, body.service_id, body.booking_date),
-        )
-        bid = cursor.lastrowid
-        return BookingOut(id=bid, customer_id=customer_id, service_id=body.service_id, booking_date=body.booking_date)
-    finally:
-        _clean(cursor)
+        customer_id = current_user["id"]
+        res = db.table("bookings").insert({
+            "customer_id": customer_id,
+            "service_id": body.service_id,
+            "booking_date": str(body.booking_date)
+        }).execute()
+
+        if not res.data:
+            raise HTTPException(status_code=500, detail="Failed to create booking")
+        
+        return res.data[0]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/bookings", response_model=list[BookingOut])
-def my_bookings(user: dict = Depends(get_current_user), db: MySQLConnection = Depends(get_db)):
-    customer_id = user["id"]
-    cursor = db.cursor(dictionary=True)
+def get_bookings(current_user: dict = Depends(get_current_user), db: Client = Depends(get_db)):
     try:
-        cursor.execute("""
-            SELECT b.id, b.customer_id, b.service_id, b.booking_date,
-                   s.name AS service_name, s.phone AS service_phone,
-                   s.address AS service_address, s.image AS service_image,
-                   s.category
-            FROM bookings b
-            JOIN services s ON b.service_id = s.id
-            WHERE b.customer_id = %s
-            ORDER BY b.created_at DESC
-        """, (customer_id,))
-        rows = cursor.fetchall()
+        customer_id = current_user["id"]
+        
+        # Load bookings with nested services details
+        res = db.table("bookings").select("*, services:service_id(*)").eq("customer_id", customer_id).order("created_at", desc=True).execute()
+        
+        rows = []
+        for r in res.data:
+            svc = r.pop("services", {})
+            if svc:
+                r["service_name"] = svc.get("name")
+                r["service_category"] = svc.get("category")
+                r["service_image"] = svc.get("image")
+                r["service_address"] = svc.get("address")
+            else:
+                r["service_name"] = ""
+                r["service_category"] = ""
+                r["service_image"] = ""
+                r["service_address"] = ""
+            rows.append(r)
+            
         return rows
-    finally:
-        _clean(cursor)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ---------- REVIEWS ----------
 
 @router.post("/reviews", response_model=ReviewOut)
-def create_review(body: ReviewCreate, user: dict = Depends(get_current_user), db: MySQLConnection = Depends(get_db)):
-    user_id = user["id"]
-    cursor = db.cursor(dictionary=True)
+def create_review(body: ReviewCreate, current_user: dict = Depends(get_current_user), db: Client = Depends(get_db)):
     try:
-        cursor.execute(
-            "INSERT INTO reviews (user_id, service_id, rating, comment) VALUES (%s,%s,%s,%s)",
-            (user_id, body.service_id, body.rating, body.comment),
+        user_id = current_user["id"]
+        
+        # Insert review
+        res = db.table("reviews").insert({
+            "user_id": user_id,
+            "service_id": body.service_id,
+            "rating": body.rating,
+            "comment": body.comment
+        }).execute()
+
+        if not res.data:
+            raise HTTPException(status_code=500, detail="Failed to create review")
+
+        rid = res.data[0]["id"]
+
+        # Recalculate average rating for service
+        avg_res = db.table("reviews").select("rating").eq("service_id", body.service_id).execute()
+        ratings = [r["rating"] for r in avg_res.data]
+        avg = sum(ratings) / len(ratings) if ratings else 0
+
+        # Update service rating
+        db.table("services").update({"rating": round(avg, 1)}).eq("id", body.service_id).execute()
+
+        return ReviewOut(
+            id=rid,
+            user_id=user_id,
+            service_id=body.service_id,
+            rating=body.rating,
+            comment=body.comment
         )
-        rid = cursor.lastrowid
-
-        cursor.execute("SELECT AVG(rating) AS avg_r FROM reviews WHERE service_id = %s", (body.service_id,))
-        avg = cursor.fetchone()["avg_r"] or 0
-        cursor.fetchall()
-        cursor.execute("UPDATE services SET rating = %s WHERE id = %s", (round(avg, 1), body.service_id))
-        cursor.fetchall()
-
-        return ReviewOut(id=rid, user_id=user_id, service_id=body.service_id, rating=body.rating, comment=body.comment)
-    finally:
-        _clean(cursor)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/reviews/{service_id}", response_model=list[ReviewOut])
-def get_reviews(service_id: int, db: MySQLConnection = Depends(get_db)):
-    cursor = db.cursor(dictionary=True)
+def get_reviews(service_id: int, db: Client = Depends(get_db)):
     try:
-        cursor.execute("""
-            SELECT r.*, u.username
-            FROM reviews r
-            LEFT JOIN users u ON r.user_id = u.id
-            WHERE r.service_id = %s
-            ORDER BY r.created_at DESC
-        """, (service_id,))
-        return cursor.fetchall()
-    finally:
-        _clean(cursor)
+        # Load reviews with nested users details
+        res = db.table("reviews").select("*, users:user_id(username)").eq("service_id", service_id).order("created_at", desc=True).execute()
+        
+        rows = []
+        for r in res.data:
+            usr = r.pop("users", {})
+            r["username"] = usr.get("username") if usr else None
+            rows.append(r)
+            
+        return rows
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ---------- STATIC FILES ----------
