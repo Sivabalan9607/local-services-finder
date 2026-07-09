@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 
-const API = 'http://localhost:8000/api'
+const API = (import.meta.env.VITE_API_URL || 'http://localhost:8000') + '/api'
 
 export default function AddService() {
   const [form, setForm] = useState({ name: '', category: '', phone: '', address: '', pincode: '' })

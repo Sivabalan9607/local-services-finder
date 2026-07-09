@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 
-const API = 'http://localhost:8000/api'
+const API = (import.meta.env.VITE_API_URL || 'http://localhost:8000') + '/api'
 
 export default function Admin() {
   const [services, setServices] = useState([])
@@ -46,7 +46,7 @@ export default function Admin() {
               <tr key={s.id}>
                 <td>
                   {s.image
-                    ? <img src={`http://localhost:8000/uploads/${s.image}`} alt="" />
+                    ? <img src={`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/uploads/${s.image}`} alt="" />
                     : <div style={{ width: 50, height: 50, borderRadius: 8, background: 'rgba(255,255,255,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>🛠️</div>
                   }
                 </td>

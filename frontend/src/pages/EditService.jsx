@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 
-const API = 'http://localhost:8000/api'
+const API = (import.meta.env.VITE_API_URL || 'http://localhost:8000') + '/api'
 
 export default function EditService() {
   const { id } = useParams()
@@ -16,7 +16,7 @@ export default function EditService() {
       .then(r => r.json())
       .then(d => {
         setForm({ name: d.name, category: d.category, phone: d.phone, address: d.address, pincode: d.pincode })
-        if (d.image) setCurrentImage(`http://localhost:8000/uploads/${d.image}`)
+        if (d.image) setCurrentImage(`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/uploads/${d.image}`)
       })
       .catch(() => navigate('/admin'))
   }, [id, navigate])

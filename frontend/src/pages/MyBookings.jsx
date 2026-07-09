@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 
-const API = 'http://localhost:8000/api'
+const API = (import.meta.env.VITE_API_URL || 'http://localhost:8000') + '/api'
 
 export default function MyBookings() {
   const [bookings, setBookings] = useState([])
@@ -28,7 +28,7 @@ export default function MyBookings() {
           {bookings.map(b => (
             <div className="booking-card" key={b.id}>
               {b.service_image ? (
-                <img src={`http://localhost:8000/uploads/${b.service_image}`} alt="" />
+                <img src={`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/uploads/${b.service_image}`} alt="" />
               ) : (
                 <div style={{ width: '100%', height: 160, borderRadius: 12, background: 'rgba(255,255,255,0.05)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 48 }}>🛠️</div>
               )}

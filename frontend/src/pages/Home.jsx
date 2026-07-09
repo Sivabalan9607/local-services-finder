@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 
-const API = 'http://localhost:8000/api'
+const API = (import.meta.env.VITE_API_URL || 'http://localhost:8000') + '/api'
 
 const categoryIcons = {
   'Plumber': '🔧', 'Electrician': '⚡', 'Mechanic': '🔩',
@@ -141,7 +141,7 @@ export default function Home() {
             <div className="service-card" key={s.id}>
               <div className="card-img-wrap">
                 <img
-                  src={s.image ? `http://localhost:8000/uploads/${s.image}` : getDefaultImg(s.category)}
+                   src={s.image ? `${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/uploads/${s.image}` : getDefaultImg(s.category)}
                   alt={s.name}
                   loading="lazy"
                 />

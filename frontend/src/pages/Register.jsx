@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 
-const API = 'http://localhost:8000'
+const API = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
 export default function Register() {
   const [form, setForm] = useState({ username: '', full_name: '', phone: '', password: '', role: 'customer' })
